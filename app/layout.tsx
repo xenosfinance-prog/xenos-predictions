@@ -23,7 +23,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             fontSize: "0.875rem",
           }}
         >
-          <a href="https://xenosfinance.com" style={{ textDecoration: "none", color: "#888", fontSize: "0.8rem" }}>&larr; XenosFinance</a>
+          <Link href="https://xenosfinance.com" style={{ textDecoration: "none", color: "#888", fontSize: "0.8rem" }}>&larr; XenosFinance</Link>
           <span style={{ color: "#ddd" }}>|</span>
           <Link href="/" style={{ fontWeight: 700, textDecoration: "none", color: "#111" }}>
             Xenos Predictions
