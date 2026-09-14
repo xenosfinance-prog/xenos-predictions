@@ -50,10 +50,18 @@ export default async function AdminPage() {
                 <td style={{ padding: "0.5rem" }}>{(pYes * 100).toFixed(0)}%</td>
                 <td style={{ padding: "0.5rem" }}>{m.closesAt.toLocaleDateString()}</td>
                 <td style={{ padding: "0.5rem" }}>
-                  {(m.status === "OPEN" || m.status === "CLOSED") && (
-                    <ResolveButton marketId={m.id} question={m.question} />
-                  )}
-                  {m.status === "RESOLVED" && <span style={{ color: "#888" }}>Resolved: {m.resolvedOutcome}</span>}
+                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                    <Link
+                      href={`/admin/markets/${m.id}/edit`}
+                      style={{ fontSize: "0.75rem", color: "#444", textDecoration: "underline" }}
+                    >
+                      Edit
+                    </Link>
+                    {(m.status === "OPEN" || m.status === "CLOSED") && (
+                      <ResolveButton marketId={m.id} question={m.question} />
+                    )}
+                    {m.status === "RESOLVED" && <span style={{ color: "#888" }}>Resolved: {m.resolvedOutcome}</span>}
+                  </div>
                 </td>
               </tr>
             );
