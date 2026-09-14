@@ -1,37 +1,7 @@
-/**
- * lib/trade.ts
- *
- * Executes a single buy or sell against a market. Both paths share
- * the same locking discipline:
- *
- *   1. Idempotency check FIRST, before opening any transaction — if
- *      a Trade with this idempotencyKey already exists, we return it
- *      unchanged and never touch balances again. This is what makes
- *      a retried network request safe to resend as-is.
- *   2. Inside one Postgres transaction, lock the Market row and the
- *      User row with SELECT ... FOR UPDATE, ALWAYS in that order
- *      (market, then user) — a fixed lock order across every caller
- *      is what prevents two concurrent trades from deadlocking each
- *      other by acquiring the same two locks in opposite order.
- *   3. Do all reads of current state (qYes, qNo, balance, position)
- *      from INSIDE the lock, never from an earlier unlocked read —
- *      otherwise the LMSR price used for costing could be stale by
- *      the time the write happens.
- *   4. Every state change (market q's, position shares, user
- *      balance, Trade log insert) happens in that same transaction,
- *      so a failure partway through rolls back everything, never a
- *      half-applied trade.
- *
- * This module still hasn't been run against a real Postgres instance
- * (no DB was available in the sandbox this was written in) — the SQL
- * and Prisma API usage follow documented patterns correctly, but
- * treat this as code-reviewed, not integration-tested, until it's
- * been exercised against a real database.
- */
-
 import { Prisma, MarketStatus, Outcome as PrismaOutcome } from "@prisma/client";
 import { prisma } from "./prisma";
 import { costToBuy, proceedsFromSell, sharesForSpend, type Outcome } from "./lmsr";
+import { recordTradeActivity, checkAndAwardBadges } from "./gamification";
 
 export class TradeError extends Error {
   constructor(message: string) {
@@ -93,11 +63,20 @@ async function findExistingTrade(idempotencyKey: string) {
   return prisma.trade.findUnique({ where: { idempotencyKey } });
 }
 
+async function applyGamification(userId: string): Promise<void> {
+  try {
+    await recordTradeActivity(userId);
+    await checkAndAwardBadges(userId);
+  } catch (e) {
+    console.error("[gamification] failed to update streak/badges", e);
+  }
+}
+
 export interface BuyParams {
   userId: string;
   marketId: string;
   outcome: Outcome;
-  pointsToSpend: bigint; // exact budget, in micro-points — see lib/lmsr.ts scale convention
+  pointsToSpend: bigint;
   idempotencyKey: string;
 }
 
@@ -110,11 +89,11 @@ export async function executeBuy(params: BuyParams) {
 
   const existing = await findExistingTrade(idempotencyKey);
   if (existing) {
-    return existing; // safe replay — do not re-execute
+    return existing;
   }
 
   try {
-    return await prisma.$transaction(async (tx) => {
+    const trade = await prisma.$transaction(async (tx) => {
       const market = await lockMarketRow(tx, marketId);
       const user = await lockUserRow(tx, userId);
 
@@ -167,12 +146,10 @@ export async function executeBuy(params: BuyParams) {
 
       return trade;
     });
+
+    await applyGamification(userId);
+    return trade;
   } catch (e) {
-    // Unique-constraint race: two requests with the same idempotency
-    // key both passed the pre-check and both reached the insert —
-    // the loser here isn't an error from the caller's point of view,
-    // it just means the winner's trade IS the answer. Return that
-    // instead of surfacing a confusing P2002 to the client.
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
       const winner = await findExistingTrade(idempotencyKey);
       if (winner) return winner;
@@ -185,7 +162,7 @@ export interface SellParams {
   userId: string;
   marketId: string;
   outcome: Outcome;
-  shares: bigint; // exact share count to sell, in micro-shares
+  shares: bigint;
   idempotencyKey: string;
 }
 
@@ -202,7 +179,7 @@ export async function executeSell(params: SellParams) {
   }
 
   try {
-    return await prisma.$transaction(async (tx) => {
+    const trade = await prisma.$transaction(async (tx) => {
       const market = await lockMarketRow(tx, marketId);
       const user = await lockUserRow(tx, userId);
 
@@ -253,6 +230,9 @@ export async function executeSell(params: SellParams) {
 
       return trade;
     });
+
+    await applyGamification(userId);
+    return trade;
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
       const winner = await findExistingTrade(idempotencyKey);
