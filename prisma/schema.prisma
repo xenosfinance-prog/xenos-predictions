@@ -50,6 +50,7 @@ model User {
   passwordHash  String
   displayName   String
   createdAt     DateTime @default(now())
+}
 
   // Synced from the main site's premium system via webhook from the
   // xenos-ai-proxy Worker — NOT a source of truth on its own. No live
@@ -222,5 +223,4 @@ model Payout {
 
   @@index([userId])
   @@index([marketId])
-}
 }
