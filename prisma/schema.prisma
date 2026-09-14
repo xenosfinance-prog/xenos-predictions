@@ -59,6 +59,12 @@ model User {
 
   isAdmin       Boolean  @default(false)
 
+  currentStreak Int      @default(0)
+  longestStreak Int      @default(0)
+  lastTradeDate DateTime?
+
+  badges        UserBadge[]
+  payouts       Payout[]
   pointsBalance BigInt   @default(1000000000) // 1,000 points at 6dp micro-point scale — starting grant
 
   positions     Position[]
@@ -101,7 +107,7 @@ model Market {
   positions     Position[]
   trades        Trade[]
   resolution    Resolution?
-
+  payouts       Payout[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
@@ -191,4 +197,30 @@ model Resolution {
   note            String?  @db.Text
 
   createdAt       DateTime @default(now())
+
+model UserBadge {
+  id        String   @id @default(cuid())
+  userId    String
+  badgeKey  String
+  earnedAt  DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, badgeKey])
+  @@index([userId])
+}
+
+model Payout {
+  id        String   @id @default(cuid())
+  userId    String
+  marketId  String
+  amount    BigInt
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id])
+  market    Market   @relation(fields: [marketId], references: [id])
+
+  @@index([userId])
+  @@index([marketId])
+}
 }
