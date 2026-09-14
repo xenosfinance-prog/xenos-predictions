@@ -1,0 +1,194 @@
+// Xenos Predictions — schema.prisma
+//
+// Design principles (carried over from the original spec):
+//  - Integer micro-point accounting everywhere money-like values are
+//    stored — no Float/Decimal for balances, shares, or settlement.
+//    1 "point" = 1_000_000 micro-points internally, to give LMSR room
+//    for fractional share math without ever touching floating point
+//    in a persisted column.
+//  - Admins must hold zero positions in a market before they can
+//    resolve it — enforced in application code (see lib/resolve.ts),
+//    but the schema keeps an auditable, insert-only resolution log
+//    so that rule is checkable after the fact too.
+//  - Every trade carries a client-generated idempotency key so a
+//    retried request never double-executes.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum MarketStatus {
+  DRAFT // created but not yet open to trading
+  OPEN
+  CLOSED // trading window ended, awaiting resolution
+  RESOLVED
+  VOID // cancelled — all trades refunded
+}
+
+enum MarketCategory {
+  MACRO
+  CENTRAL_BANKS
+  FX
+  COMMODITIES
+  RATES
+  GEOPOLITICS
+}
+
+enum Outcome {
+  YES
+  NO
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  displayName   String
+  createdAt     DateTime @default(now())
+
+  // Synced from the main site's premium system via webhook from the
+  // xenos-ai-proxy Worker — NOT a source of truth on its own. No live
+  // cross-domain session sharing in MVP, this is a cached flag only.
+  xenosPremium  Boolean  @default(false)
+  premiumSyncedAt DateTime?
+
+  isAdmin       Boolean  @default(false)
+
+  pointsBalance BigInt   @default(1000000000) // 1,000 points at 6dp micro-point scale — starting grant
+
+  positions     Position[]
+  trades        Trade[]
+  createdMarkets Market[] @relation("MarketCreator")
+  resolutions   Resolution[]
+
+  @@index([email])
+}
+
+model Market {
+  id            String         @id @default(cuid())
+  slug          String         @unique
+  question      String         // e.g. "Will the Fed cut rates in the March 2027 meeting?"
+  description   String         @db.Text
+  category      MarketCategory
+  status        MarketStatus   @default(DRAFT)
+
+  // LMSR liquidity parameter (b). Fixed at market creation, never
+  // changed mid-market — changing b after trades exist would silently
+  // alter the cost function and break settlement math.
+  liquidityB    BigInt
+
+  // Running LMSR quantities, in micro-shares. q_yes and q_no.
+  // Everything else (prices, cost-to-trade) is DERIVED from these at
+  // read time — they are the only persisted state the engine needs.
+  qYes          BigInt         @default(0)
+  qNo           BigInt         @default(0)
+
+  closesAt      DateTime       // trading stops automatically at this time
+  resolvesAt    DateTime?      // expected resolution time, informational only
+
+  resolvedOutcome Outcome?
+  resolvedAt      DateTime?
+  settledAt       DateTime? // set once payouts have been distributed — see lib/settlement.ts
+
+  creatorId     String
+  creator       User           @relation("MarketCreator", fields: [creatorId], references: [id])
+
+  positions     Position[]
+  trades        Trade[]
+  resolution    Resolution?
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([status])
+  @@index([category])
+  @@index([closesAt])
+}
+
+// One row per (user, market, outcome) — a user's net share holding.
+// Kept separate from Trade (which is an immutable log) so current
+// position can be read with a single indexed lookup instead of
+// summing the whole trade history every time.
+model Position {
+  id        String   @id @default(cuid())
+  userId    String
+  marketId  String
+  outcome   Outcome
+
+  // Net shares held, in micro-shares. Can theoretically go through
+  // zero (fully exited) but never negative — short exposure in this
+  // MVP is expressed by holding the OTHER outcome's shares, not by
+  // negative share counts.
+  shares    BigInt   @default(0)
+
+  user      User     @relation(fields: [userId], references: [id])
+  market    Market   @relation(fields: [marketId], references: [id])
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, marketId, outcome])
+  @@index([marketId])
+}
+
+// Immutable trade log — never updated or deleted, only inserted.
+// This is the audit trail; Position is the derived "current state"
+// table for fast reads.
+model Trade {
+  id              String   @id @default(cuid())
+  userId          String
+  marketId        String
+  outcome         Outcome
+  side            String   // "BUY" | "SELL"
+
+  sharesDelta     BigInt   // positive for BUY, negative for SELL, in micro-shares
+  pointsDelta     BigInt   // positive = points spent (BUY), negative = points received (SELL)
+
+  qYesBefore      BigInt   // market state snapshot, for audit/replay
+  qNoBefore       BigInt
+  qYesAfter       BigInt
+  qNoAfter        BigInt
+
+  // Client-generated UUID — enforced unique so a retried/duplicated
+  // request (flaky network, double-tap on mobile) can never execute
+  // twice. The API layer treats a duplicate key as "return the
+  // original result", not an error.
+  idempotencyKey  String   @unique
+
+  user            User     @relation(fields: [userId], references: [id])
+  market          Market   @relation(fields: [marketId], references: [id])
+
+  createdAt       DateTime @default(now())
+
+  @@index([marketId])
+  @@index([userId])
+}
+
+// Insert-only resolution log. A market has at most one Resolution,
+// but this is its own table (rather than just fields on Market) so
+// the act of resolving — who, when, and the zero-position check
+// result — is independently auditable and can never be silently
+// edited after the fact.
+model Resolution {
+  id              String   @id @default(cuid())
+  marketId        String   @unique
+  market          Market   @relation(fields: [marketId], references: [id])
+
+  outcome         Outcome
+  resolvedById    String
+  resolvedBy      User     @relation(fields: [resolvedById], references: [id])
+
+  // Snapshot proof that the anti-manipulation rule held at
+  // resolution time: the resolving admin's YES and NO share counts
+  // in THIS market, both must be 0.
+  resolverYesShares BigInt
+  resolverNoShares  BigInt
+
+  note            String?  @db.Text
+
+  createdAt       DateTime @default(now())
+}
