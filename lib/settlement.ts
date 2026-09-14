@@ -25,7 +25,7 @@
  * correctly still "unsettled" rather than half-paid-and-forgotten.
  */
 
-import { MarketStatus, Outcome as PrismaOutcome } from "@prisma/client";
+import { MarketStatus, Outcome as PrismaOutcome, Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 
 export class SettlementError extends Error {
@@ -46,14 +46,9 @@ export async function settleMarket(marketId: string) {
     throw new SettlementError(`market is not resolved yet (status: ${market.status})`);
   }
   if (market.settledAt) {
-    // Already done — not an error, just a no-op. Callers shouldn't
-    // have to know or care whether this is the first or a retried call.
     return { alreadySettled: true, payoutsIssued: 0 };
   }
   if (!market.resolvedOutcome) {
-    // Shouldn't be reachable — RESOLVED status is only ever set
-    // alongside resolvedOutcome in resolveMarket() — but guard it
-    // explicitly rather than silently paying out an undefined outcome.
     throw new SettlementError("market is RESOLVED but has no resolvedOutcome set — data inconsistency");
   }
 
@@ -72,21 +67,22 @@ export async function settleMarket(marketId: string) {
 
     if (positions.length === 0) break;
 
-    await prisma.$transaction(
-      positions.map((pos) =>
+    const updates: Prisma.PrismaPromise<unknown>[] = [
+      ...positions.map((pos) =>
         prisma.user.update({
           where: { id: pos.userId },
           data: { pointsBalance: { increment: pos.shares } },
         })
-      ).concat(
-        positions.map((pos) =>
-          prisma.position.update({
-            where: { id: pos.id },
-            data: { shares: 0n },
-          })
-        )
-      )
-    );
+      ),
+      ...positions.map((pos) =>
+        prisma.position.update({
+          where: { id: pos.id },
+          data: { shares: 0n },
+        })
+      ),
+    ];
+
+    await prisma.$transaction(updates);
 
     totalPayouts += positions.length;
     cursor = positions[positions.length - 1].id;
