@@ -1,46 +1,65 @@
+import { redirect } from "next/navigation";
 import Link from "next/link";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { price } from "@/lib/lmsr";
+import { ResolveButton } from "./ResolveButton";
 
-// This page intentionally stays a server component with no client
-// JS — it's a read-only list, no interactivity needed here. The
-// trade form (on the market detail page) is where client-side state
-// actually lives.
-export default async function MarketsListPage() {
-  const markets = await prisma.market.findMany({
-    where: { status: "OPEN" },
-    orderBy: { closesAt: "asc" },
-  });
+export default async function AdminPage() {
+  const session = await auth();
+  if (!session?.user) {
+    redirect("/login");
+  }
+  if (!session.user.isAdmin) {
+    redirect("/");
+  }
+
+  const markets = await prisma.market.findMany({ orderBy: { createdAt: "desc" } });
 
   return (
-    <main style={{ maxWidth: 800, margin: "0 auto", padding: "2rem 1rem", fontFamily: "system-ui, sans-serif" }}>
-      <h1 style={{ fontSize: "1.5rem", marginBottom: "0.25rem" }}>Xenos Predictions</h1>
-      <p style={{ color: "#666", marginBottom: "1.5rem", fontSize: "0.875rem" }}>
-        Virtual points only — nothing here is ever convertible to money.
-      </p>
+    <main style={{ maxWidth: 900, margin: "0 auto", padding: "2rem 1rem", fontFamily: "system-ui, sans-serif" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+        <h1 style={{ fontSize: "1.4rem" }}>Admin — Markets</h1>
+        <Link
+          href="/admin/markets/new"
+          style={{ padding: "0.5rem 1rem", borderRadius: 6, background: "#111", color: "white", textDecoration: "none", fontSize: "0.875rem" }}
+        >
+          + New market
+        </Link>
+      </div>
 
-      {markets.length === 0 && <p>No open markets right now.</p>}
-
-      <ul style={{ listStyle: "none", padding: 0, display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-        {markets.map((m) => {
-          const pYes = price(m.qYes, m.qNo, m.liquidityB, "YES");
-          return (
-            <li key={m.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "1rem" }}>
-              <Link href={`/markets/${m.slug}`} style={{ textDecoration: "none", color: "inherit" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "1rem" }}>
-                  <span style={{ fontWeight: 600 }}>{m.question}</span>
-                  <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>
-                    {(pYes * 100).toFixed(0)}% YES
-                  </span>
-                </div>
-                <div style={{ fontSize: "0.75rem", color: "#888", marginTop: "0.25rem" }}>
-                  {m.category} &middot; closes {m.closesAt.toLocaleDateString()}
-                </div>
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
+        <thead>
+          <tr style={{ textAlign: "left", borderBottom: "2px solid #ddd" }}>
+            <th style={{ padding: "0.5rem" }}>Question</th>
+            <th style={{ padding: "0.5rem" }}>Status</th>
+            <th style={{ padding: "0.5rem" }}>YES price</th>
+            <th style={{ padding: "0.5rem" }}>Closes</th>
+            <th style={{ padding: "0.5rem" }}>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {markets.map((m) => {
+            const pYes = price(m.qYes, m.qNo, m.liquidityB, "YES");
+            return (
+              <tr key={m.id} style={{ borderBottom: "1px solid #eee" }}>
+                <td style={{ padding: "0.5rem" }}>
+                  <Link href={`/markets/${m.slug}`}>{m.question}</Link>
+                </td>
+                <td style={{ padding: "0.5rem" }}>{m.status}</td>
+                <td style={{ padding: "0.5rem" }}>{(pYes * 100).toFixed(0)}%</td>
+                <td style={{ padding: "0.5rem" }}>{m.closesAt.toLocaleDateString()}</td>
+                <td style={{ padding: "0.5rem" }}>
+                  {(m.status === "OPEN" || m.status === "CLOSED") && (
+                    <ResolveButton marketId={m.id} question={m.question} />
+                  )}
+                  {m.status === "RESOLVED" && <span style={{ color: "#888" }}>Resolved: {m.resolvedOutcome}</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </main>
   );
 }
